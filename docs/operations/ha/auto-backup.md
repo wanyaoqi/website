@@ -73,3 +73,61 @@ total 181548
 [root@controller 20230528-000001]# kubectl apply -f oc.20230528-000001.yml
 [root@controller 20230528-000001]# kubectl apply -f onecloud-operator.20230528-000001.yml
 ```
+
+## 手动从备份恢复 etcd
+
+```bash
+[root@controller ~]# cd /opt/yunion/backup/
+[root@controller backup]# tar -xzvf onecloud.bkup.20230528-000001.tar.gz
+[root@controller backup]# cd 20230528-000001/
+[root@controller 20230528-000001]# ll
+total 181548
+-rw------- 1 root root 185819168 May 28 00:00 etcd_snapshot_20230528-000001.db
+-rw-r--r-- 1 root root     74493 May 28 00:00 oc.20230528-000001.yml
+-rw-r--r-- 1 root root      3241 May 28 00:00 onecloud-operator.20230528-000001.yml
+
+# etcd 单节点数据损坏无法启动时，可以从备份恢复 etcd。需要手动运行容器来恢复
+
+# 先暂停 kubelet
+[root@controller ~]# systemctl stop kubelet
+
+# 先备份 etcd 数据
+[root@controller ~]# mv /var/lib/etcd /var/lib/etcd.backup
+
+# 查看 etcd 启动命令
+[root@controller ~]# cat /etc/kubernetes/manifests/etcd.yaml
+......
+spec:
+  containers:
+  - command:
+    - etcd
+    - --advertise-client-urls=https://192.168.204.5:2379
+    - --cert-file=/etc/kubernetes/pki/etcd/server.crt
+    - --client-cert-auth=true
+    - --data-dir=/var/lib/etcd
+    - --initial-advertise-peer-urls=https://192.168.204.5:2380
+    - --initial-cluster=office-05-host05=https://192.168.204.5:2380
+    - --key-file=/etc/kubernetes/pki/etcd/server.key
+    - --listen-client-urls=https://127.0.0.1:2379,https://192.168.204.5:2379
+    - --listen-peer-urls=https://192.168.204.5:2380
+    - --name=office-05-host05
+    - --peer-cert-file=/etc/kubernetes/pki/etcd/peer.crt
+    - --peer-client-cert-auth=true
+    - --peer-key-file=/etc/kubernetes/pki/etcd/peer.key
+    - --peer-trusted-ca-file=/etc/kubernetes/pki/etcd/ca.crt
+    - --snapshot-count=10000
+    - --trusted-ca-file=/etc/kubernetes/pki/etcd/ca.crt
+    image: registry.cn-beijing.aliyuncs.com/yunion/etcd:3.4.6
+
+# 执行 etcd 从快照恢复，对应的
+[root@controller ~]# docker run --rm \
+    -v /etc:/etc \
+    -v /var/lib:/var/lib \
+    -v /opt/yunion/backup/:/opt/yunion/backup/ \
+    registry.cn-beijing.aliyuncs.com/yunion/etcd:3.4.6 \
+    ETCDCTL_API=3 etcdctl snapshot restore /opt/yunion/backup/etcd_snapshot_20230528-000001.db --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key --name=office-05-host05 --data-dir=/var/lib/etcd --initial-cluster=office-05-host05=https://192.168.204.5:2380 --initial-advertise-peerurls=https://192.168.204.5:2380
+
+# 恢复 kubelet
+[root@controller ~]# systemctl start kubelet
+
+```
